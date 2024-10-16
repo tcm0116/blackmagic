@@ -402,6 +402,7 @@ uint64_t adiv5_ap_read_pidr(adiv5_access_port_s *ap, uint32_t addr);
 void *adiv5_unpack_data(void *dest, uint32_t src, uint32_t val, align_e align);
 const void *adiv5_pack_data(uint32_t dest, const void *src, uint32_t *data, align_e align);
 
+void ap_mem_access_setup(adiv5_access_port_s *ap, uint32_t addr, align_e align);
 void firmware_mem_write_sized(adiv5_access_port_s *ap, uint32_t dest, const void *src, size_t len, align_e align);
 void firmware_mem_read(adiv5_access_port_s *ap, void *dest, uint32_t src, size_t len);
 void firmware_ap_write(adiv5_access_port_s *ap, uint16_t addr, uint32_t value);

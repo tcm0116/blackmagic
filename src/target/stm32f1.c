@@ -51,6 +51,8 @@ static bool stm32f1_flash_erase(target_flash_s *f, target_addr_t addr, size_t le
 static bool stm32f1_flash_write(target_flash_s *f, target_addr_t dest, const void *src, size_t len);
 static bool stm32f1_mass_erase(target_s *t);
 
+static bool hk32f030m_flash_write(target_flash_s *f, target_addr_t dest, const void *src, size_t len);
+
 /* Flash Program ad Erase Controller Register Map */
 #define FPEC_BASE     0x40022000U
 #define FLASH_ACR     (FPEC_BASE + 0x00U)
@@ -264,6 +266,18 @@ bool stm32f1_probe(target_s *t)
 	size_t block_size = 0x400;
 
 	switch (device_id) {
+	case 0x000U:
+		if (t->part_id == 0x600) { /* HK32F030M */
+			t->driver = "HK32F030M";
+			target_add_ram(t, 0x20000000, 0x1000);
+			stm32f1_add_flash(t, 0x8000000, 0x4000, 0x80);
+			target_add_commands(t, stm32f1_cmd_list, "STM32F0");
+			t->flash->write = hk32f030m_flash_write;
+			t->flash->erased = 0x00;
+			return true;
+		} else
+			return false;
+
 	case 0x29bU: /* CS clone */
 	case 0x410U: /* Medium density */
 	case 0x412U: /* Low density */
@@ -620,5 +634,56 @@ static bool stm32f1_cmd_option(target_s *t, int argc, const char **argv)
 		tc_printf(t, "0x%08X: 0x%04X\n", addr + 2U, val >> 16U);
 	}
 
+	return true;
+}
+
+static bool hk32f030m_flash_write(target_flash_s *f, target_addr_t dest, const void *src, size_t len)
+{
+	/*
+	 * The HK32F030M requires that thash be written in half words and that each half word write
+	 * first clears the EOP, sets the PG bit, writes the data, waits for BSY to clear, and then
+	 * clears the PG bit. This is different than how flash writing is performed for the STM32,
+	 * which only has to do the setup and tear down once for writes within omplete flash banks.
+	 */
+	target_s *t = f->t;
+	adiv5_access_port_s *ap = cortexm_ap(t);
+
+	uint32_t odest = dest;
+
+	len >>= ALIGN_HALFWORD;
+	while (len--) {
+		/* Clear the EOP bit since we're starting a new flash operation */
+		stm32f1_flash_clear_eop(t, FLASH_BANK1_OFFSET);
+
+		/* Set the PG bit in the FLASH_CR register to enable half word writes */
+		target_mem_write32(t, FLASH_CR, FLASH_CR_PG);
+
+		/*
+		 * This is an exerpt from firmware_mem_write_sized since we need to write half words but
+		 * no shifting of the input data is necessary.
+		 */
+		uint32_t tmp = ((uint32_t) * (uint16_t *)src);
+		ap_mem_access_setup(ap, dest, ALIGN_HALFWORD);
+
+		src = (uint8_t *)src + (1 << ALIGN_HALFWORD);
+		dest += (1 << ALIGN_HALFWORD);
+		adiv5_dp_low_access(ap->dp, ADIV5_LOW_WRITE, ADIV5_AP_DRW, tmp);
+
+		/* Check for 10 bit address overflow */
+		if ((dest ^ odest) & 0xfffffc00U) {
+			odest = dest;
+			adiv5_dp_low_access(ap->dp, ADIV5_LOW_WRITE, ADIV5_AP_TAR, dest);
+		}
+
+		/* Make sure this write is complete by doing a dummy read */
+		adiv5_dp_read(ap->dp, ADIV5_DP_RDBUFF);
+
+		/* Wait for completion or an error */
+		if (!stm32f1_flash_busy_wait(t, FLASH_BANK1_OFFSET, NULL))
+			return false;
+
+		/* Clear the PG bit in the FLASH_CR register */
+		target_mem_write32(t, FLASH_CR, 0);
+	}
 	return true;
 }
